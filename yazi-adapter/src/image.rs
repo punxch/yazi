@@ -137,7 +137,7 @@ impl Image {
     
             if matches!(fmt_used, Some(ImageFormat::Gif)) {
                 let mut dec = GifDecoder::new(Cursor::new(&data))?;
-                dec.set_limits(limits);
+                dec.set_limits(limits.clone());
                 let orientation = Orientation::NoTransforms; // GIF doesn't support EXIF orientation
                 let icc = dec.icc_profile().ok().flatten();
                 let mut out = Vec::new();
@@ -154,10 +154,12 @@ impl Image {
     
             if matches!(fmt_used, Some(ImageFormat::Png)) {
                 if let Ok(mut dec) = PngDecoder::new(Cursor::new(&data)) {
-                    if let Ok(mut apng) = dec.apng() {
+                    // Get ICC profile before moving dec into APNG decoder
+                    let icc = dec.icc_profile().ok().flatten();
+                    dec.set_limits(limits.clone());
+                    if let Ok(apng) = dec.apng() {
                         // apng.set_limits(limits);
                         let orientation = Orientation::NoTransforms; // APNG doesn't support EXIF orientation
-                        let icc = dec.icc_profile().ok().flatten();
                         let mut out = Vec::new();
                         for f in apng.into_frames() {
                             let frame = f?;
@@ -174,7 +176,7 @@ impl Image {
     
             if matches!(fmt_used, Some(ImageFormat::WebP)) {
                 if let Ok(mut dec) = WebPDecoder::new(Cursor::new(&data)) {
-                    dec.set_limits(limits);
+                    dec.set_limits(limits.clone());
                     let orientation = Orientation::NoTransforms; // WebP animation doesn't support EXIF orientation
                     let icc = dec.icc_profile().ok().flatten();
                     let mut out = Vec::new();
