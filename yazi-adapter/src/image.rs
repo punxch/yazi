@@ -1,7 +1,8 @@
+use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::Result;
-use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageError, ImageReader, ImageResult, Limits, codecs::{jpeg::JpegEncoder, png::PngEncoder}, imageops::FilterType, metadata::Orientation};
+use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageError, ImageReader, ImageResult, Limits, codecs::{jpeg::JpegEncoder, png::PngEncoder}, imageops::FilterType, metadata::Orientation, ImageFormat};
 use ratatui::layout::Rect;
 use yazi_config::YAZI;
 use yazi_fs::provider::{Provider, local::Local};
@@ -110,18 +111,42 @@ impl Image {
 
 		let path = path.to_owned();
 		tokio::task::spawn_blocking(move || {
-			let mut reader = ImageReader::open(path)?;
+			// Read file bytes so we can inspect magic and force AVIF format when needed.
+			let data = std::fs::read(&path)?;
+			// Try to guess format from header bytes.
+			let guessed = image::guess_format(&data).ok();
+
+			// helper: quick detection of ISO BMFF-based AVIF (ftyp ... avif)
+			let is_avif = |buf: &[u8]| -> bool {
+				if buf.len() >= 12 && &buf[4..8] == b"ftyp" {
+					let brand = &buf[8..12];
+					brand == b"avif" || brand == b"avis" || brand == b"mif1" || brand == b"msf1"
+				} else {
+					false
+				}
+			};
+
+			let mut reader = if let Some(fmt) = guessed {
+				// Known format from header
+				ImageReader::with_format(Cursor::new(data), fmt)
+			} else if is_avif(&data) {
+				// Force AVIF when header indicates it (handles cases image crate might not auto-detect)
+				ImageReader::with_format(Cursor::new(data), ImageFormat::Avif)
+			} else {
+				// Fallback: let ImageReader try to guess from the cursor / extension
+				ImageReader::new(Cursor::new(data)).with_guessed_format()?
+			};
 			reader.limits(limits);
 
-			let mut decoder = reader.with_guessed_format()?.into_decoder()?;
-			let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-			let icc = decoder.icc_profile().unwrap_or_default();
-
-			Ok((DynamicImage::from_decoder(decoder)?, orientation, icc))
-		})
-		.await
-		.map_err(|e| ImageError::IoError(e.into()))?
-	}
+			let mut decoder = reader.into_decoder()?;
+            let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+            let icc = decoder.icc_profile().unwrap_or_default();
+ 
+            Ok((DynamicImage::from_decoder(decoder)?, orientation, icc))
+        })
+        .await
+        .map_err(|e| ImageError::IoError(e.into()))?
+    }
 
 	fn flip_size(orientation: Orientation, (w, h): (u32, u32)) -> (u32, u32) {
 		use image::metadata::Orientation::{Rotate90, Rotate90FlipH, Rotate270, Rotate270FlipH};

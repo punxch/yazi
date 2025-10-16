@@ -13,6 +13,7 @@ pub(crate) struct Iip;
 
 impl Iip {
 	pub(crate) async fn image_show(path: &Path, max: Rect) -> Result<Rect> {
+		println!("test");
 		let img = Image::downscale(path, max).await?;
 		let area = Image::pixel_area((img.width(), img.height()), max);
 		let b = Self::encode(img).await?;
