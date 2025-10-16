@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::Result;
-use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageError, ImageReader, ImageResult, Limits, codecs::{jpeg::JpegEncoder, png::PngEncoder}, imageops::FilterType, metadata::Orientation, ImageFormat};
+use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageError, ImageReader, ImageResult, Limits, codecs::{jpeg::JpegEncoder, png::PngEncoder}, imageops::FilterType, metadata::Orientation, ImageFormat, AnimationDecoder, Frame};
 use ratatui::layout::Rect;
 use yazi_config::YAZI;
 use yazi_fs::provider::{Provider, local::Local};
@@ -138,11 +138,48 @@ impl Image {
 			};
 			reader.limits(limits);
 
-			let mut decoder = reader.into_decoder()?;
-            let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-            let icc = decoder.icc_profile().unwrap_or_default();
+			// let mut decoder = reader.into_decoder()?;
+            // let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+            // let icc = decoder.icc_profile().unwrap_or_default();
+
+            // Ok((DynamicImage::from_decoder(decoder)?, orientation, icc))
+
+			// 如果解码器支持动画（实现 AnimationDecoder），使用 into_frames() 逐帧遍历
+            // 注意：into_frames() 在某些 image 版本/特性组合下可能不可用或不可用于 AVIF
+            let mut decoder = reader.into_decoder()?;
+
+            // 尝试把 decoder 当作动画解码器使用
+            // 如果类型实现了 AnimationDecoder，这里会返回一个迭代器（Item = ImageResult<Frame>）
+            if let Ok(frames_iter) = image::AnimationDecoder::into_frames(Box::new(decoder)) {
+                // frames_iter 是一个实现 Iterator<Item = ImageResult<Frame>>1
+                for frame_result in frames_iter {
+                    let frame = frame_result?; // ImageResult<Frame>
+                    // Frame 提供像素缓冲 & 延迟（duration）
+                    let delay = frame.delay(); // 例如用于时间轴
+                    let buffer = frame.buffer(); // &ImageBuffer<...>
+
+                    // 复制/转换像素数据以便进一步处理（例如构造 DynamicImage）
+                    // 下面示例把 buffer 克隆为 owned ImageBuffer，然后转换成 DynamicImage
+                    let owned_buf = buffer.to_owned();
+                    let dyn_img = DynamicImage::ImageRgba8(owned_buf);
+
+                    // 在这里处理每帧像素数据与元信息
+                    println!("frame: {}x{}, delay: {:?}", dyn_img.width(), dyn_img.height(), delay);
+                    // 如果需要，保存每帧到磁盘（示例：PNG）
+                    // let out = format!("frame-{}.png", frame_index);
+                    // dyn_img.save(&out)?;
+                }
+            } else {
+                // 非动画：作为单张图像处理
+                // let img = DynamicImage::from_decoder(decoder)?;
+				let mut decoder = reader.into_decoder()?;
+				let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+				let icc = decoder.icc_profile().unwrap_or_default();
+
+                println!("single image: {}x{}", img.width(), img.height());
+				Ok((DynamicImage::from_decoder(decoder)?, orientation, icc))
+            }
  
-            Ok((DynamicImage::from_decoder(decoder)?, orientation, icc))
         })
         .await
         .map_err(|e| ImageError::IoError(e.into()))?
