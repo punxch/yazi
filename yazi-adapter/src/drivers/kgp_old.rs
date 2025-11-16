@@ -5,7 +5,7 @@ use anyhow::Result;
 use base64::{Engine, engine::general_purpose};
 use image::DynamicImage;
 use ratatui::layout::Rect;
-use tokio::time::{sleep, Duration};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use yazi_term::tty::TTY;
 
 use crate::{CLOSE, ESCAPE, Emulator, Image, START, adapter::Adapter, image::AnimatedImage};
@@ -32,25 +32,41 @@ impl KgpOld {
 			});
 		}
 		
-		// For animated images, we'll display each frame in sequence
+		// For animated images, use interval-based timing for more accurate playback
 		let frame_duration = Duration::from_millis(1000 / frame_rate as u64);
-		let mut first_area = None;
+		let mut interval = interval(frame_duration);
 		
-		for img in frames {
-			let area = Image::pixel_area((img.width(), img.height()), max);
-			if first_area.is_none() {
-				first_area = Some(area);
-				Adapter::KgpOld.image_hide()?;
-				Adapter::shown_store(area);
-			}
+		// Set missed tick behavior to skip to maintain timing
+		interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+		
+		let mut first_area = None;
+		let mut frame_iter = frames.into_iter().cycle(); // Create an infinite iterator that loops
+		
+		// Get the first frame to establish the area
+		if let Some(first_img) = frame_iter.next() {
+			let area = Image::pixel_area((first_img.width(), first_img.height()), max);
+			first_area = Some(area);
+			Adapter::KgpOld.image_hide()?;
+			Adapter::shown_store(area);
 			
-			let b = Self::encode(img).await?;
-			
+			// Display the first frame immediately
+			let b = Self::encode(first_img).await?;
 			Emulator::move_lock((area.x, area.y), |w| {
 				w.write_all(&b)?;
 				Ok(())
 			})?;
-			sleep(frame_duration).await;
+		}
+		
+		// Continue with the rest of the frames using interval timing
+		for img in frame_iter {
+			interval.tick().await; // Wait for the next interval
+			
+			let area = first_area.unwrap_or_default();
+			let b = Self::encode(img).await?;
+			Emulator::move_lock((area.x, area.y), |w| {
+				w.write_all(&b)?;
+				Ok(())
+			})?;
 		}
 		
 		Ok(first_area.unwrap_or_default())

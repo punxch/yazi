@@ -6,7 +6,7 @@ use base64::{Engine, engine::general_purpose};
 use crossterm::{cursor::MoveTo, queue};
 use image::DynamicImage;
 use ratatui::layout::Rect;
-use tokio::time::{sleep, Duration};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use yazi_shared::SyncCell;
 
 use crate::{CLOSE, ESCAPE, Emulator, START, adapter::Adapter, image::Image, image::AnimatedImage};
@@ -336,27 +336,45 @@ impl Kgp {
 			});
 		}
 		
-		// For animated images, we'll display each frame in sequence
+		// For animated images, use interval-based timing for more accurate playback
 		let frame_duration = Duration::from_millis(1000 / frame_rate as u64);
-		let mut first_area = None;
+		let mut interval = interval(frame_duration);
 		
-		for img in frames {
-			let area = Image::pixel_area((img.width(), img.height()), max);
-			if first_area.is_none() {
-				first_area = Some(area);
-				Adapter::Kgp.image_hide()?;
-				Adapter::shown_store(area);
-			}
+		// Set missed tick behavior to skip to maintain timing
+		interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+		
+		let mut first_area = None;
+		let mut frame_iter = frames.into_iter().cycle(); // Create an infinite iterator that loops
+		
+		// Get the first frame to establish the area
+		if let Some(first_img) = frame_iter.next() {
+			let area = Image::pixel_area((first_img.width(), first_img.height()), max);
+			first_area = Some(area);
+			Adapter::Kgp.image_hide()?;
+			Adapter::shown_store(area);
 			
-			let b1 = Self::encode(img).await?;
+			// Display the first frame immediately
+			let b1 = Self::encode(first_img).await?;
 			let b2 = Self::place(&area)?;
-			
 			Emulator::move_lock((area.x, area.y), |w| {
 				w.write_all(&b1)?;
 				w.write_all(&b2)?;
 				Ok(())
 			})?;
-			sleep(frame_duration).await;
+		}
+		
+		// Continue with the rest of the frames using interval timing
+		for img in frame_iter {
+			interval.tick().await; // Wait for the next interval
+			
+			let area = first_area.unwrap_or_default();
+			let b1 = Self::encode(img).await?;
+			let b2 = Self::place(&area)?;
+			Emulator::move_lock((area.x, area.y), |w| {
+				w.write_all(&b1)?;
+				w.write_all(&b2)?;
+				Ok(())
+			})?;
 		}
 		
 		Ok(first_area.unwrap_or_default())
