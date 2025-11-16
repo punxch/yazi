@@ -5,24 +5,55 @@ use anyhow::Result;
 use base64::{Engine, engine::general_purpose};
 use image::DynamicImage;
 use ratatui::layout::Rect;
+use tokio::time::{sleep, Duration};
 use yazi_term::tty::TTY;
 
-use crate::{CLOSE, ESCAPE, Emulator, Image, START, adapter::Adapter};
+use crate::{CLOSE, ESCAPE, Emulator, Image, START, adapter::Adapter, image::AnimatedImage};
 
 pub(crate) struct KgpOld;
 
 impl KgpOld {
 	pub(crate) async fn image_show(path: &Path, max: Rect) -> Result<Rect> {
-		let img = Image::downscale(path, max).await?;
-		let area = Image::pixel_area((img.width(), img.height()), max);
-		let b = Self::encode(img).await?;
+		let animated_img = Image::downscale(path, max).await?;
+		let frames = animated_img.frames;
+		let frame_rate = animated_img.frame_rate.unwrap_or(10); // Default to 10 FPS if not specified
+		
+		// If there's only one frame or no frame rate, just display the first frame
+		if frames.len() <= 1 || frame_rate == 0 {
+			let img = frames.into_iter().next().ok_or_else(|| anyhow::anyhow!("No frames found in image"))?;
+			let area = Image::pixel_area((img.width(), img.height()), max);
+			let b = Self::encode(img).await?;
 
-		Adapter::KgpOld.image_hide()?;
-		Adapter::shown_store(area);
-		Emulator::move_lock((area.x, area.y), |w| {
-			w.write_all(&b)?;
-			Ok(area)
-		})
+			Adapter::KgpOld.image_hide()?;
+			Adapter::shown_store(area);
+			return Emulator::move_lock((area.x, area.y), |w| {
+				w.write_all(&b)?;
+				Ok(area)
+			});
+		}
+		
+		// For animated images, we'll display each frame in sequence
+		let frame_duration = Duration::from_millis(1000 / frame_rate as u64);
+		let mut first_area = None;
+		
+		for img in frames {
+			let area = Image::pixel_area((img.width(), img.height()), max);
+			if first_area.is_none() {
+				first_area = Some(area);
+				Adapter::KgpOld.image_hide()?;
+				Adapter::shown_store(area);
+			}
+			
+			let b = Self::encode(img).await?;
+			
+			Emulator::move_lock((area.x, area.y), |w| {
+				w.write_all(&b)?;
+				Ok(())
+			})?;
+			sleep(frame_duration).await;
+		}
+		
+		Ok(first_area.unwrap_or_default())
 	}
 
 	pub(crate) fn image_erase(_: Rect) -> Result<()> {
